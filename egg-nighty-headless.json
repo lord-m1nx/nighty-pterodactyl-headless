@@ -13,7 +13,7 @@
         "ghcr.io/parkervcp/yolks:wine_latest": "ghcr.io/parkervcp/yolks:wine_latest"
     },
     "file_denylist": [],
-    "startup": "bash start.sh",
+    "startup": "bash scripts/start.sh",
     "config": {
         "files": "{}",
         "startup": "{\r\n    \"done\": \"Running 24/7 Headless\"\r\n}",
@@ -27,16 +27,5 @@
             "entrypoint": "bash"
         }
     },
-    "variables": [
-        {
-            "name": "Bridge Port",
-            "description": "Port used to access the Nighty Web UI in your browser.",
-            "env_variable": "PORT",
-            "default_value": "8088",
-            "user_viewable": true,
-            "user_editable": true,
-            "rules": "required|numeric|between:1024,65535",
-            "field_type": "text"
-        }
-    ]
+    "variables": []
 }
