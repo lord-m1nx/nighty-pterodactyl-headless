@@ -1,0 +1,42 @@
+{
+    "_comment": "DO NOT EDIT: FILE GENERATED AUTOMATICALLY BY PTERODACTYL PANEL",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-09-13T15:00:00+00:00",
+    "name": "Nighty Headless (Wine)",
+    "author": "lord@m1nx",
+    "description": "Unofficial 24/7 headless hosting solution for Nighty on Pterodactyl using Wine 11.",
+    "features": null,
+    "docker_images": {
+        "ghcr.io/parkervcp/yolks:wine_latest": "ghcr.io/parkervcp/yolks:wine_latest"
+    },
+    "file_denylist": [],
+    "startup": "bash start.sh",
+    "config": {
+        "files": "{}",
+        "startup": "{\r\n    \"done\": \"Running 24/7 Headless\"\r\n}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\necho \"Egg initialized. Upload your files and Nighty.exe to start.\"",
+            "container": "debian:bookworm-slim",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Bridge Port",
+            "description": "Port used to access the Nighty Web UI in your browser.",
+            "env_variable": "PORT",
+            "default_value": "8088",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|numeric|between:1024,65535",
+            "field_type": "text"
+        }
+    ]
+}
