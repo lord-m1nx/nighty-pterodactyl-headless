@@ -13,7 +13,7 @@
         "ghcr.io/parkervcp/yolks:wine_latest": "ghcr.io/parkervcp/yolks:wine_latest"
     },
     "file_denylist": [],
-    "startup": "bash start.sh",
+    "startup": "bash scripts/start.sh",
     "config": {
         "files": "{}",
         "startup": "{\r\n    \"done\": \"Running 24/7 Headless\"\r\n}",
