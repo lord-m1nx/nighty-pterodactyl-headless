@@ -32,16 +32,15 @@ An unofficial, beginner-friendly solution to host your **[Nighty](https://nighty
 ### Step 2: Create the Server
 1. Go to **Admin → Servers → Create New**.
 2. Set your server name (e.g., `Nighty-24/7`).
-3. Allocate at least **2048 MB RAM** and 1 CPU core.
+3. Allocate at least **2048 MB RAM**, **3024 MB Disk storage** and **100% CPU**.
 4. Assign a **Primary Port Allocation**. Pterodactyl exposes it automatically to the egg as `SERVER_PORT`.
 5. Under **Nest & Egg Configuration**, select the **Nighty Headless (Wine)** egg.
 6. Click **Create Server**.
 
 ### Step 3: Upload Files
-1. Open your new server in the Pterodactyl **File Manager** (or connect via SFTP).
-2. Upload this repository's files into the server root directory.
-3. Upload your official **`Nighty.exe`** into the root directory.
-4. You do **not** need to copy the allocated port into `.env`. On startup, `scripts/start.sh` reads Pterodactyl's built-in `SERVER_PORT`, creates `.env` from `.env.example` if necessary, and writes the correct `BRIDGE_PORT` automatically.
+1. This repository is automatically cloned into the server root directory in the installation process. 
+2. Upload your official **`Nighty.exe`** into the root directory.
+3. You do **not** need to copy the allocated port into `.env`. On startup, `scripts/start.sh` reads Pterodactyl's built-in `SERVER_PORT`, creates `.env` from `.env.example` if necessary, and writes the correct `BRIDGE_PORT` automatically.
 
 ### Step 4: Start the Server
 1.  Click Start in the Pterodactyl console.
