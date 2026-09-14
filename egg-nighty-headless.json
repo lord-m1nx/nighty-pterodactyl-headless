@@ -4,7 +4,7 @@
         "version": "PTDL_v2",
         "update_url": null
     },
-    "exported_at": "2026-09-13T15:00:00+00:00",
+    "exported_at": "2026-09-13T16:00:00+00:00",
     "name": "Nighty Headless (Wine)",
     "author": "lord@m1nx",
     "description": "Unofficial 24/7 headless hosting solution for Nighty on Pterodactyl using Wine 11.",
@@ -22,10 +22,31 @@
     },
     "scripts": {
         "installation": {
-            "script": "#!/bin/bash\necho \"Egg initialized. Upload your files and Nighty.exe to start.\"",
+            "script": "#!/bin/bash\n# Pterodactyl Auto-Cloner for Nighty Headless\nset -e\n\napt-get update\napt-get install -y git curl ca-certificates\n\nmkdir -p /mnt/server\ncd /mnt/server\n\nGIT_URL=\"${GIT_ADDRESS:-https://github.com/lord-m1nx/nighty-pterodactyl-headless.git}\"\nBRANCH=\"${GIT_BRANCH:-main}\"\n\necho \"==> Cloning Nighty Headless from: ${GIT_URL} (branch: ${BRANCH})...\"\nTMP_DIR=$(mktemp -d)\ngit clone --depth 1 --branch \"$BRANCH\" \"$GIT_URL\" \"$TMP_DIR\"\n\necho \"==> Deploying files into server...\"\nshopt -s dotglob\nfor file in \"$TMP_DIR\"/*; do\n    fname=$(basename \"$file\")\n    if [ \"$fname\" = \".git\" ]; then\n        continue\n    fi\n    # Do not overwrite Nighty.exe or existing .env if server is reinstalled\n    if [ \"$fname\" = \"Nighty.exe\" ] && [ -f \"/mnt/server/Nighty.exe\" ]; then\n        continue\n    fi\n    if [ \"$fname\" = \".env\" ] && [ -f \"/mnt/server/.env\" ]; then\n        continue\n    fi\n    cp -rf \"$file\" /mnt/server/\ndone\nshopt -u dotglob\nrm -rf \"$TMP_DIR\"\n\n# Ensure scripts have execute permissions\nchmod +x /mnt/server/scripts/*.sh 2>/dev/null || true\nchmod +x /mnt/server/*.sh 2>/dev/null || true\n\necho \"==========================================================\"\necho \"  Installation complete!\"\necho \"  NEXT STEP: Upload your licensed 'Nighty.exe' to root\"\necho \"  and click Start!\"\necho \"==========================================================\"",
             "container": "debian:bookworm-slim",
             "entrypoint": "bash"
         }
     },
-    "variables": []
+    "variables": [
+        {
+            "name": "Git Repo Address",
+            "description": "The GitHub repository to clone for the Nighty Headless environment.",
+            "env_variable": "GIT_ADDRESS",
+            "default_value": "https://github.com/lord-m1nx/nighty-pterodactyl-headless.git",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Git Branch",
+            "description": "Branch of the GitHub repository to use.",
+            "env_variable": "GIT_BRANCH",
+            "default_value": "main",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        }
+    ]
 }
