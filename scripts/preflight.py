@@ -471,12 +471,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.command == "wine":
         return check_wine(args.path)
     if args.command == "diag":
-        code, _ = check_network(args.quiet)
+        result = check_network(args.quiet)
+        code = result[0] if isinstance(result, tuple) else result
         return code
     if args.command == "report":
         return generate_report(args.diag_dir, args.outfile, args.quiet)
     return 2
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
