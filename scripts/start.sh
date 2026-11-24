@@ -1,92 +1,115 @@
 #!/usr/bin/env bash
-# Pterodactyl entrypoint for Nighty Headless.
-# The primary Pterodactyl allocation is exposed as SERVER_PORT; keep .env in
-# sync so scripts/run.sh and bridge.py always use the port actually assigned
-# to this server.
-set -uo pipefail
+set -e
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$HERE"
+# ==============================================================================
+# Nighty Headless Pterodactyl Startup Orchestrator
+# Compatible with Python 3.14 runtime & Wine 10/11 WoW64
+# ==============================================================================
 
-clear 2>/dev/null || true
+export HOME="/home/container"
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH"
+export WINEPREFIX="${WINEPREFIX:-/home/container/.local/share/nighty/prefix}"
+export WINEARCH="win64"
+export WINEDEBUG="-all"
+export DISPLAY="${DISPLAY:-:99}"
 
-# Create the runtime environment file when the user has not created one yet.
+SERVER_PORT="${SERVER_PORT:-8088}"
+WEB_USERNAME="${WEB_USERNAME:-admin}"
+WEB_PASSWORD="${WEB_PASSWORD:-nighty123}"
+
+cd /home/container
+
+echo "=================================================================="
+echo "    Nighty Headless (Pterodactyl Edition) - Python 3.14 Ready    "
+echo "=================================================================="
+
+# 1. Verify binary presence
+if [ ! -f "Nighty.exe" ] && [ ! -f "Nighty_stub.exe" ]; then
+    echo "[-] ERROR: Nighty.exe not found in /home/container!"
+    echo "[!] Please upload your legal 'Nighty.exe' to the server root via SFTP and restart."
+    exit 1
+fi
+
+# 2. Ensure Astral uv is available (for rootless Python 3.14 toolchains)
+if ! command -v uv &>/dev/null; then
+    echo "[+] Installing user-space uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+fi
+
+# Ensure Python 3.14 is pulled into the isolated uv cache
+echo "[+] Ensuring Python 3.14 runtime is installed via uv..."
+uv python install 3.14 || true
+
+# 3. Initialize Wineprefix in Windows 10 mode (Python 3.14 requirement)
+if [ ! -d "$WINEPREFIX" ]; then
+    echo "[+] Initializing 64-bit Wine prefix for Windows 10..."
+    wineboot -i
+    wine reg add 'HKCU\Software\Wine' /v Version /t REG_SZ /d 'win10' /f >/dev/null 2>&1 || true
+fi
+
+# 4. Check if repacking into headless stub is required
+REPACK_NEEDED=0
+if [ ! -f "Nighty_stub.exe" ]; then
+    REPACK_NEEDED=1
+elif [ -f "Nighty.exe" ] && [ "Nighty.exe" -nt "Nighty_stub.exe" ]; then
+    echo "[!] Detected a newer Nighty.exe. Re-patching stub..."
+    REPACK_NEEDED=1
+fi
+
+if [ "$REPACK_NEEDED" = "1" ]; then
+    echo "[+] Generating Nighty_stub.exe using Python 3.14 repacker..."
+    if [ -f "scripts/repack.py" ]; then
+        uv run --python 3.14 python3 scripts/repack.py
+    elif [ -f "scripts/install.sh" ]; then
+        # Run upstream repack skipping system-wide sudo commands
+        bash scripts/install.sh --no-wine-install || bash scripts/install.sh || true
+    fi
+
+    # Fallback guard
+    if [ ! -f "Nighty_stub.exe" ] && [ -f "Nighty.exe" ]; then
+        echo "[!] Stub generation bypassed; fallback to direct binary."
+        cp Nighty.exe Nighty_stub.exe
+    fi
+fi
+
+# 5. Inject Pterodactyl's dynamic SERVER_PORT into .env
 if [ ! -f .env ]; then
-  if [ ! -f .env.example ]; then
-    echo "[start] FATAL: .env and .env.example are both missing." >&2
-    exit 1
-  fi
-  cp .env.example .env
+    if [ -f .env.example ]; then
+        cp .env.example .env
+    else
+        touch .env
+    fi
 fi
 
-# Pterodactyl already exports the server's primary allocation as SERVER_PORT.
-# Keep PORT as a compatibility fallback for installations made with older eggs.
-BRIDGE_PORT="${SERVER_PORT:-${PORT:-8088}}"
-case "$BRIDGE_PORT" in
-  ''|*[!0-9]*)
-    echo "[start] FATAL: invalid bridge port: '$BRIDGE_PORT'" >&2
-    exit 1
-    ;;
-esac
-if [ "$BRIDGE_PORT" -lt 1 ] || [ "$BRIDGE_PORT" -gt 65535 ]; then
-  echo "[start] FATAL: bridge port is outside the valid range: $BRIDGE_PORT" >&2
-  exit 1
+# Strip any existing port bindings and write Pterodactyl allocation
+sed -i '/^PORT=/d' .env
+sed -i '/^BRIDGE_PORT=/d' .env
+sed -i '/^TARGET_PORT=/d' .env
+sed -i '/^HOST=/d' .env
+
+echo "HOST=0.0.0.0" >> .env
+echo "PORT=${SERVER_PORT}" >> .env
+echo "BRIDGE_PORT=${SERVER_PORT}" >> .env
+echo "TARGET_PORT=8090" >> .env
+
+# Set Web UI credentials if configured
+if [ -n "$WEB_USERNAME" ]; then
+    sed -i '/^NIGHTY_USER=/d' .env
+    sed -i '/^WEB_USERNAME=/d' .env
+    echo "NIGHTY_USER=${WEB_USERNAME}" >> .env
+    echo "WEB_USERNAME=${WEB_USERNAME}" >> .env
 fi
 
-# scripts/run.sh reloads .env, so persist the Pterodactyl allocation there
-# rather than only exporting it in this wrapper process.
-if grep -q '^BRIDGE_PORT=' .env; then
-  sed -i "s/^BRIDGE_PORT=.*/BRIDGE_PORT=$BRIDGE_PORT/" .env
-else
-  printf '\nBRIDGE_PORT=%s\n' "$BRIDGE_PORT" >> .env
+if [ -n "$WEB_PASSWORD" ]; then
+    sed -i '/^NIGHTY_PASS=/d' .env
+    sed -i '/^WEB_PASSWORD=/d' .env
+    echo "NIGHTY_PASS=${WEB_PASSWORD}" >> .env
+    echo "WEB_PASSWORD=${WEB_PASSWORD}" >> .env
 fi
-export BRIDGE_PORT
 
-# ── Centered Blue → Cyan Gradient ASCII Banner ──
-echo -e "\033[1m"
-echo -e "\033[38;2;26;95;255m   ███╗   ██╗██╗ ██████╗ ██╗  ██╗████████╗██╗   ██╗"
-echo -e "\033[38;2;21;133;255m   ████╗  ██║██║██╔════╝ ██║  ██║╚══██╔══╝╚██╗ ██╔╝"
-echo -e "\033[38;2;15;168;255m   ██╔██╗ ██║██║██║  ███╗███████║   ██║    ╚████╔╝ "
-echo -e "\033[38;2;10;202;255m   ██║╚██╗██║██║██║   ██║██╔══██║   ██║     ╚██╔╝  "
-echo -e "\033[38;2;5;231;255m   ██║ ╚████║██║╚██████╔╝██║  ██║   ██║      ██║   "
-echo -e "\033[38;2;0;255;255m   ╚═╝  ╚═══╝╚═╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝      ╚═╝   \033[0m"
-echo ""
-echo -e "   \033[38;2;0;180;255m─────────────────────────────────────────────────────────────\033[0m"
-echo -e "   \033[38;2;100;210;255m✦ Status:\033[0m      \033[32m● Running 24/7 Headless\033[0m"
-echo -e "   \033[38;2;100;210;255m✦ Web UI Port:\033[0m \033[36m${BRIDGE_PORT}\033[0m"
-echo -e "   \033[38;2;100;210;255m✦ Access URL:\033[0m  \033[36mhttp://<server-ip>:${BRIDGE_PORT}/\033[0m"
-echo -e "   \033[38;2;100;210;255m✦ Platform:\033[0m    \033[35mWine 11 (Headless Linux)\033[0m"
-echo -e "   \033[38;2;0;180;255m─────────────────────────────────────────────────────────────\033[0m"
-echo ""
-echo -e "   \033[90m[Live Discord logs streaming below...]\033[0m"
-echo ""
+echo "[✓] Environment configured: Bridge Proxy listening on 0.0.0.0:${SERVER_PORT}"
 
-# Nighty's mirrored application log lives in diagnostics/nighty.log.
-mkdir -p diagnostics
-touch diagnostics/nighty.log
-tail -n 0 -F diagnostics/nighty.log &
-TAIL_PID=$!
-RUNNER_PID=""
-
-cleanup_tail() {
-  kill "$TAIL_PID" 2>/dev/null || true
-  wait "$TAIL_PID" 2>/dev/null || true
-}
-
-forward_signal() {
-  local sig="$1"
-  [ -n "$RUNNER_PID" ] && kill "-$sig" "$RUNNER_PID" 2>/dev/null || true
-}
-
-trap cleanup_tail EXIT
-trap 'forward_signal INT' INT
-trap 'forward_signal TERM' TERM
-
-# Run the backend through the existing upstream orchestrator. Running it as a
-# child lets this wrapper forward Pterodactyl stop signals and still clean up
-# the log-tail process. Preserve the runner's real exit status.
-bash scripts/run.sh once 2> >(grep -v "_XSERVTransmkdir" >&2) &
-RUNNER_PID=$!
-wait "$RUNNER_PID"
-RUNNER_RC=$?
-exit "$RUNNER_RC"
+# 6. Launch upstream orchestrator in non-interactive terminal mode ('once')
+echo "[✓] Launching Nighty Headless Stack..."
+exec bash scripts/run.sh once
