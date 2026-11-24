@@ -565,7 +565,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return code
 
         return check_network(args.quiet)
->>>>>>> upstream/main
+
     if args.command == "report":
         return generate_report(args.diag_dir, args.outfile, args.quiet)
     if args.command == "triage":
