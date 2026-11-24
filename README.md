@@ -48,3 +48,27 @@ Compatible with the latest **Python 3.14 runtime** and **Wine 10/11 WoW64**. Bas
    - Build `Nighty_stub.exe`.
    - Start the bridge proxy on your primary port.
 3. Once running, open your browser and visit:
+   ```
+   http://<YOUR_SERVER_IP>:<YOUR_ALLOCATED_PORT>/
+   ```
+4. Log in using your configured credentials.
+
+---
+
+##  Migrating Existing Data from Windows PC
+
+To transfer your existing accounts, tokens, and settings:
+
+1. On your Windows PC, press `Win + R`, type `%appdata%`, and press **Enter**.
+2. Find the `Nighty` folder and compress it into a `.zip` archive.
+3. In Pterodactyl File Manager, navigate to:
+   ```
+   /.local/share/nighty/prefix/drive_c/users/container/AppData/Roaming/
+   ```
+4. Upload and extract your `.zip` archive, overwriting any existing `Nighty` folder.
+5. Restart your server in the console.
+
+---
+
+### Author
+Maintained by **lord-m1nx** (Discord: `m1nx.fr`). Upstream credits to **glowxx**.
