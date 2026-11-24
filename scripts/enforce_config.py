@@ -229,6 +229,14 @@ def enforce_web(appdata):
         msgs.append("web already true")
 
     if isinstance(nc, dict) and nc:
+        # New Nighty selects a login by name rather than the old per-login flag.
+        if "active_account" not in nc and isinstance(nc.get("logins"), dict):
+            active = [name for name, info in nc["logins"].items()
+                      if isinstance(info, dict) and info.get("active")]
+            if len(active) == 1:
+                nc["active_account"] = active[0]
+                _save(nc_path, nc)
+                msgs.append("active account migrated")
         backup_path = os.path.join(appdata, "nighty.config.bak")
         if _backup_differs_from_source(nc_path, backup_path):
             try:
@@ -556,13 +564,15 @@ def rotate_and_clean_logs(appdata):
     max_bytes = 10 * 1024 * 1024  # 10 MB
     keep_bytes = 2 * 1024 * 1024  # 2 MB
 
-    search_dirs = list(dict.fromkeys([root_diag, home_diag, nighty_home, os.path.join(appdata, "diagnostics"), appdata]))
+    mirrored_names = {"nighty.log"}
+
+    search_dirs = list(dict.fromkeys([root_diag, home_diag, nighty_home]))
     for sdir in search_dirs:
         if not sdir or not os.path.isdir(sdir):
             continue
         try:
             for f in os.listdir(sdir):
-                if f.endswith(".log"):
+                if f.endswith(".log") and f not in mirrored_names:
                     p = os.path.join(sdir, f)
                     try:
                         sz = os.path.getsize(p)

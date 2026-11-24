@@ -7,9 +7,9 @@ size threshold, keeping a bounded number of rotated backups.
 
 from __future__ import annotations
 
-import glob
 import os
 from pathlib import Path
+import shutil
 import sys
 
 
@@ -46,34 +46,26 @@ def rotate_log_file(log_path: Path, max_bytes: int = 10 * 1024 * 1024, max_backu
     try:
         if target.is_file():
             target.unlink()
-        log_path.rename(target)
-        # Re-create empty log file
-        log_path.touch(mode=0o644, exist_ok=True)
+        shutil.copyfile(log_path, target)
+        with open(log_path, "r+b") as fh:
+            fh.truncate(0)
         return True
     except OSError as e:
-        # Fallback: if rename fails (e.g. file is open), truncate in place keeping tail
-        try:
-            with open(log_path, "r+", encoding="utf-8", errors="replace") as f:
-                content = f.read()
-                tail_bytes = content[-512 * 1024 :] if len(content) > 512 * 1024 else ""
-                f.seek(0)
-                f.write(f"[LOG ROTATED - Previous size: {size} bytes]\n" + tail_bytes)
-                f.truncate()
-            return True
-        except OSError:
-            print(f"[rotate_logs] Warning: Failed to rotate {log_path}: {e}", file=sys.stderr)
-            return False
+        print(f"[rotate_logs] Warning: Failed to rotate {log_path}: {e}", file=sys.stderr)
+        return False
 
 
-def find_appdata_logs() -> list[Path]:
-    logs = []
-    prefix = os.environ.get("WINEPREFIX") or os.path.expanduser("~/.local/share/nighty/prefix")
-    pattern = os.path.join(prefix, "drive_c", "users", "*", "AppData", "Roaming", "Nighty Selfbot", "nighty.log")
-    for match in glob.glob(pattern):
-        p = Path(match)
-        if p.is_file():
-            logs.append(p)
-    return logs
+def wrapper_owned_logs(diag_path: Path, home_path: Path) -> list[Path]:
+    log_names = ["backend.log", "bridge.log", "guard.log", "xvfb.log", "stub_webview.log", "nighty.log"]
+    targets = []
+    for name in log_names:
+        p_diag = diag_path / name
+        if p_diag.is_file():
+            targets.append(p_diag)
+        p_home = home_path / name
+        if p_home.is_file() and p_home != p_diag:
+            targets.append(p_home)
+    return targets
 
 
 def main() -> int:
@@ -91,19 +83,7 @@ def main() -> int:
     if len(sys.argv) > 1:
         targets = [Path(p) for p in sys.argv[1:]]
     else:
-        log_names = ["backend.log", "bridge.log", "guard.log", "xvfb.log", "stub_webview.log", "nighty.log"]
-        targets = []
-        for name in log_names:
-            p_diag = diag_path / name
-            if p_diag.is_file():
-                targets.append(p_diag)
-            p_home = home_path / name
-            if p_home.is_file() and p_home != p_diag:
-                targets.append(p_home)
-        # Also check AppData nighty.log
-        for app_log in find_appdata_logs():
-            if app_log not in targets:
-                targets.append(app_log)
+        targets = wrapper_owned_logs(diag_path, home_path)
 
     rotated_any = False
     for target in targets:

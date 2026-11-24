@@ -9,15 +9,18 @@
 #    • the Nighty backend (Wine, headless) with auto-relaunch
 #
 #  Run it with no arguments and it asks whether to start once or to install
-#  itself as a systemd service (autostart on every boot) — and does the setup
+#  itself as a service (autostart on every boot) — and does the setup
 #  for you. With --run it just starts the stack (this is what the service uses).
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$HERE/scripts/wine_command.sh"
+. "$HERE/scripts/init_service.sh"
+. "$HERE/scripts/backoff.sh"
 
 # ── load .env ────────────────────────────────────────────────────────────────
-set -a; [ -f "$HERE/.env" ] && . "$HERE/.env"; set +a
+. "$HERE/scripts/env_file.sh"
+nighty_load_env_file "$HERE/.env"
 
 # ── defaults ─────────────────────────────────────────────────────────────────
 : "${NIGHTY_HOME:=$HOME/.local/share/nighty}"
@@ -43,6 +46,9 @@ set -a; [ -f "$HERE/.env" ] && . "$HERE/.env"; set +a
 # open WEBUI_PORT. A transient Discord/Cloudflare failure can otherwise leave the
 # loading screen alive forever even though the first-stage watchdog has exited.
 : "${WEBUI_BOOT_TIMEOUT:=180}"
+: "${BACKEND_FAST_FAIL_SECONDS:=60}"
+: "${BACKEND_MAX_BACKOFF:=300}"
+: "${BACKEND_TRIAGE_AFTER:=3}"
 : "${CLEAN_STALE_MEI:=1}"
 : "${NIGHTY_DIAG_DIR:=$HERE/diagnostics}"
 mkdir -p "$NIGHTY_HOME" "$NIGHTY_DIAG_DIR"
@@ -50,7 +56,9 @@ export NIGHTY_DIAG_DIR
 
 export WINEPREFIX
 export WINEARCH=win64
-export WINEDEBUG=-all
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
+export QT_OPENGL="${QT_OPENGL:-software}"
+export WINEDEBUG="${WINEDEBUG:--all}"
 export DISPLAY=":$DISPLAY_NUM"
 export NIGHTY_STUB_PORT="$STUB_PORT"
 export NIGHTY_STUB_LOG="${NIGHTY_STUB_LOG:-Z:$NIGHTY_DIAG_DIR/stub_webview.log}"
@@ -264,48 +272,16 @@ guard_existing_instance() {
   return 0
 }
 
-# ── autostart (systemd) ──────────────────────────────────────────────────────
-setup_autostart() {
-  if ! command -v systemctl >/dev/null 2>&1; then
-    log "systemd not found on this host — can't set up autostart automatically."
-    log "You can still run it manually:  bash scripts/run.sh"
-    return 1
-  fi
-  local SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
-  local unit=/etc/systemd/system/nighty.service
-
+# ── autostart (systemd / OpenRC / runit) ─────────────────────────────────────
+setup_autostart_systemd() {
+  local SUDO="$1" run_user="$2" unit=/etc/systemd/system/nighty.service
   if systemctl is-active --quiet nighty.service 2>/dev/null; then
     report_existing_instance ""
     log "Autostart is already active; no second service was created."
     return 0
   fi
-  if probe_nighty_bridge || [ -n "$(find_existing_runner || true)" ]; then
-    report_existing_instance "$(find_existing_runner || true)"
-    log "Stop the manual instance with Ctrl+C, then run autostart again."
-    return 23
-  fi
-
   log "installing systemd service → $unit"
-  $SUDO tee "$unit" >/dev/null <<EOF
-[Unit]
-Description=Nighty headless (backend + Web UI bridge)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=$(id -un)
-WorkingDirectory=$HERE
-ExecStart=/usr/bin/env bash $HERE/scripts/run.sh --run
-Restart=always
-RestartSec=5
-SuccessExitStatus=23
-RestartPreventExitStatus=23
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
+  nighty_systemd_unit_text "$run_user" "$HERE" | $SUDO tee "$unit" >/dev/null || return 1
   $SUDO systemctl daemon-reload || { log "daemon-reload failed"; return 1; }
   $SUDO systemctl enable --now nighty.service || { log "enabling service failed"; return 1; }
   echo
@@ -314,6 +290,82 @@ EOF
   echo "    live log: journalctl -u nighty -f"
   echo "    panel:    http://<this-host-ip>:$BRIDGE_PORT/"
   echo "    turn off: sudo systemctl disable --now nighty"
+}
+
+setup_autostart_openrc() {
+  local SUDO="$1" run_user="$2" script=/etc/init.d/nighty
+  if ! command -v supervise-daemon >/dev/null 2>&1; then
+    log "OpenRC is present but supervise-daemon is missing; Nighty would not be restarted after a crash."
+    log "Install a newer OpenRC (>= 0.21) or start it yourself with:  bash scripts/run.sh once"
+    return 1
+  fi
+  log "installing OpenRC service → $script"
+  nighty_openrc_script_text "$run_user" "$HERE" | $SUDO tee "$script" >/dev/null || return 1
+  $SUDO chmod +x "$script" || return 1
+  $SUDO rc-update add nighty default || { log "rc-update add failed"; return 1; }
+  $SUDO rc-service nighty start || { log "starting the service failed"; return 1; }
+  echo
+  log "Autostart is ON — Nighty now starts on every boot and is running already."
+  echo "    status:   rc-service nighty status"
+  echo "    live log: tail -f $NIGHTY_DIAG_DIR/service.log"
+  echo "    panel:    http://<this-host-ip>:$BRIDGE_PORT/"
+  echo "    turn off: sudo rc-update del nighty default && sudo rc-service nighty stop"
+}
+
+setup_autostart_runit() {
+  local SUDO="$1" run_user="$2" svdir=/etc/sv/nighty link_dir="" candidate=""
+  for candidate in /var/service /etc/service /etc/runit/runsvdir/default; do
+    [ -d "$candidate" ] && { link_dir="$candidate"; break; }
+  done
+  if [ -z "$link_dir" ]; then
+    log "runit is present but no service directory was found (/var/service, /etc/service, /etc/runit/runsvdir/default)."
+    return 1
+  fi
+  log "installing runit service → $svdir"
+  $SUDO mkdir -p "$svdir/log" || return 1
+  nighty_runit_run_text "$run_user" "$HERE" | $SUDO tee "$svdir/run" >/dev/null || return 1
+  nighty_runit_log_run_text "$HERE" | $SUDO tee "$svdir/log/run" >/dev/null || return 1
+  $SUDO chmod +x "$svdir/run" "$svdir/log/run" || return 1
+  mkdir -p "$NIGHTY_DIAG_DIR/svlog" 2>/dev/null || true
+  $SUDO ln -sfn "$svdir" "$link_dir/nighty" || { log "linking the service failed"; return 1; }
+  echo
+  log "Autostart is ON — runsvdir starts Nighty on every boot (it can take a few seconds to appear)."
+  echo "    status:   sv status nighty"
+  echo "    live log: tail -f $NIGHTY_DIAG_DIR/svlog/current"
+  echo "    panel:    http://<this-host-ip>:$BRIDGE_PORT/"
+  echo "    turn off: sudo rm $link_dir/nighty"
+}
+
+setup_autostart_manual() {
+  log "No supported init system was detected (looked for systemd, OpenRC and runit)."
+  log "Force one with NIGHTY_INIT_SYSTEM=systemd|openrc|runit, or start Nighty yourself:"
+  echo
+  echo "    bash $HERE/scripts/run.sh once"
+  echo
+  log "To survive a reboot without an init system, add that command to your own supervisor,"
+  log "a container restart policy, or an @reboot crontab entry."
+  return 1
+}
+
+setup_autostart() {
+  local init_system SUDO="" run_user
+  init_system="$(nighty_detect_init_system)"
+  run_user="$(id -un)"
+  [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+
+  if probe_nighty_bridge || [ -n "$(find_existing_runner || true)" ]; then
+    report_existing_instance "$(find_existing_runner || true)"
+    log "Stop the manual instance with Ctrl+C, then run autostart again."
+    return 23
+  fi
+
+  log "init system: $init_system"
+  case "$init_system" in
+    systemd) setup_autostart_systemd "$SUDO" "$run_user" ;;
+    openrc)  setup_autostart_openrc  "$SUDO" "$run_user" ;;
+    runit)   setup_autostart_runit   "$SUDO" "$run_user" ;;
+    *)       setup_autostart_manual ;;
+  esac
 }
 
 # ── the stack ────────────────────────────────────────────────────────────────
@@ -430,9 +482,13 @@ run_stack() {
     x86_64|amd64) : ;;
     *)
       log "Box64 profile: $NIGHTY_BOX64_PROFILE (BIGBLOCK=$BOX64_DYNAREC_BIGBLOCK STRONGMEM=$BOX64_DYNAREC_STRONGMEM SAFEFLAGS=$BOX64_DYNAREC_SAFEFLAGS CALLRET=$BOX64_DYNAREC_CALLRET)"
-      if [ "$BLOCK_LRCLIB" = 1 ] && ! grep -Eq '^[[:space:]]*0\.0\.0\.0[[:space:]]+(api\.)?lrclib\.net([[:space:]]|$)' /etc/hosts 2>/dev/null; then
+      if [ "$BLOCK_LRCLIB" = 1 ] && ! grep -Eq '^[[:space:]]*192\.0\.2\.1[[:space:]]+(api\.)?lrclib\.net([[:space:]]|$)' /etc/hosts 2>/dev/null; then
         log "WARNING: lrclib.net is not blocked; its synchronous lyrics fetch can freeze Discord commands for 10-60s."
         log "Re-run bash scripts/install.sh or add the documented /etc/hosts entries."
+      elif [ "$BLOCK_LRCLIB" = 1 ] && command -v ip >/dev/null 2>&1 \
+           && ! ip route show 192.0.2.1 2>/dev/null | grep -q unreachable; then
+        log "WARNING: the RP-fetch blackhole route is missing; blackholed requests will leave the host and hang until timeout."
+        log "Restore it with:  sudo ip route replace unreachable 192.0.2.1"
       fi
       ;;
   esac
@@ -509,7 +565,8 @@ run_stack() {
   # watchdog kills and retries if the stub control server never answers
   # within BOOT_TIMEOUT — some Wine builds stall during first-prefix init
   # with no error, well before Nighty's own code would ever hang or crash.
-  ( while true; do
+  ( fast_failures=0
+    while true; do
       if [ ! -s "$NIGHTY_STUB" ]; then
         if [ -f "$NIGHTY_EXE" ]; then
           log "$NIGHTY_STUB was removed or emptied — regenerating from $NIGHTY_EXE..."
@@ -525,6 +582,7 @@ run_stack() {
       python3 "$HERE/scripts/preflight.py" report --diag-dir "$NIGHTY_DIAG_DIR" --quiet >/dev/null 2>&1 || true
       mkdir -p "$HERE/dist/ws_extensions" "$NIGHTY_HOME/dist/ws_extensions" 2>/dev/null || true
       log "launching backend ($NIGHTY_STUB)…"
+      backend_started=$(date +%s)
       "${NIGHTY_WINE_COMMAND[@]}" "$NIGHTY_STUB" >>"$NIGHTY_DIAG_DIR/backend.log" 2>&1 &
       BACKEND_PID=$!
 
@@ -579,10 +637,30 @@ run_stack() {
 
       wait "$BACKEND_PID" 2>/dev/null || true
       kill "$WATCHDOG_PID" 2>/dev/null || true
-      log "backend exited — relaunching in 3s (persistence)."
+      backend_ended=$(date +%s)
+      backend_ran=$((backend_ended - backend_started))
+      if [ "$backend_ran" -lt "$BACKEND_FAST_FAIL_SECONDS" ]; then
+        fast_failures=$((fast_failures + 1))
+      else
+        fast_failures=0
+      fi
+      relaunch_delay="$(nighty_relaunch_delay "$fast_failures" "$BACKEND_MAX_BACKOFF")"
+      if [ "$fast_failures" -eq "$BACKEND_TRIAGE_AFTER" ]; then
+        log "backend exited after ${backend_ran}s on ${fast_failures} consecutive attempts — it is not starting."
+        echo "[run] === BACKEND LOG TAIL (LAST 25 LINES) ===" >&2
+        tail -n 25 "$NIGHTY_DIAG_DIR/backend.log" 2>/dev/null >&2 || true
+        echo "[run] ==========================================" >&2
+        python3 "$HERE/scripts/preflight.py" triage >&2 2>/dev/null || true
+        log "backing off up to ${BACKEND_MAX_BACKOFF}s between attempts; fix the cause above, then restart."
+      fi
       nighty_stop_wineserver
       cleanup_pyinstaller_temp
-      sleep 3
+      if [ "$fast_failures" -gt 0 ]; then
+        log "backend exited after ${backend_ran}s — relaunching in ${relaunch_delay}s (attempt $((fast_failures + 1)))."
+      else
+        log "backend exited — relaunching in ${relaunch_delay}s (persistence)."
+      fi
+      sleep "$relaunch_delay"
     done ) &
   BACKEND_LOOP_PID=$!
 
@@ -596,9 +674,10 @@ Usage: bash scripts/run.sh [COMMAND]
 
 Commands:
   once        Start the whole stack now, in this terminal (Ctrl+C to stop).
-  autostart   Install + enable a systemd service so it starts on every boot.
+  autostart   Install + enable a service so it starts on every boot
+              (systemd, OpenRC or runit - detected automatically).
   diag        Show environment and network diagnostics.
-  --run       Same as 'once' (this is what the systemd service uses).
+  --run       Same as 'once' (this is what the installed service uses).
   help        Show this help.
 
 With no command it shows an interactive menu. Tip: when using the menu, do NOT
@@ -628,7 +707,7 @@ trap '' TTIN
 echo
 echo "  Nighty headless — how do you want to run it?"
 echo "    1) Run now (one-off, in this terminal — Ctrl+C stops it)"
-echo "    2) Set up autostart (systemd) — starts automatically on every boot"
+echo "    2) Set up autostart (systemd/OpenRC/runit) — starts automatically on every boot"
 echo
 printf "  Choice [1/2] (Enter = 1): "
 if ! read -r choice; then

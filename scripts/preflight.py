@@ -39,6 +39,8 @@ WINE_NATIVE_LIBS = (
     ("Xi", "libxi6", True),
     ("Xcursor", "libxcursor1", True),
     ("Xinerama", "libxinerama1", True),
+    ("EGL", "libegl1", True),
+    ("cups", "libcups2", True),
     ("xkbregistry", "libxkbregistry0", False),
 )
 
@@ -59,6 +61,90 @@ def redact_secrets(text: str) -> str:
 
 class PreflightError(RuntimeError):
     pass
+
+
+KNOWN_FAILURES = (
+    (
+        "bundled-extension-dll",
+        re.compile(r"DLL load failed while importing (\w+)"),
+        "A compiled extension bundled inside Nighty.exe could not load one of its own dependency DLLs "
+        "(Windows reports this as 'Module not found' for the dependency, not for the module named). "
+        "This happens inside the frozen binary and the Wine prefix, so re-running the installer or the "
+        "repack will not change it. A 64-bit-only Wine prefix with no WoW64 support is a common trigger. "
+        "See issue #13.",
+    ),
+    (
+        "pillow-imaging",
+        re.compile(r"cannot import name '_imaging' from 'PIL'"),
+        "Pillow's compiled extension failed to load for the same reason as the DLL failure above: its "
+        "dependency chain is unresolvable in this Wine prefix. Not a wrapper misconfiguration. See issue #13.",
+    ),
+    (
+        "wine-module-import",
+        re.compile(r"err:module:(?:import_dll|loader_init|LdrInitializeThunk)"),
+        "Wine could not resolve a DLL import. Run 'bash scripts/install.sh' to install the native "
+        "Wine/X11 runtime libraries, and check that WINEPREFIX points at a prefix built by this installer.",
+    ),
+    (
+        "bad-exe-format",
+        re.compile(r"Bad EXE format"),
+        "The supplied Nighty.exe is not an x86-64 PE32+ binary. On ARM/Box64 a 32-bit or damaged "
+        "executable cannot run; supply a 64-bit Nighty.exe and re-run 'bash scripts/install.sh'.",
+    ),
+    (
+        "bad-marshal-data",
+        re.compile(r"bad marshal data"),
+        "The repack ran under the wrong Python. The marshal format is version-specific; "
+        "re-run install.sh to detect the executable's Python version and fetch a matching interpreter.",
+    ),
+    (
+        "missing-license",
+        re.compile(r"KeyError\(?'motd'\)?"),
+        "Nighty has no valid license, so on_ready aborts before registering its command tree. The bot "
+        "connects but no commands work. Complete the Activate step with your Nighty license key.",
+    ),
+)
+
+
+def scan_known_failures(text: str) -> List[Dict[str, str]]:
+    if not text:
+        return []
+    found = []
+    for name, pattern, advice in KNOWN_FAILURES:
+        match = pattern.search(text)
+        if match:
+            found.append({"id": name, "match": match.group(0), "advice": advice})
+    return found
+
+
+def triage_log(path: Optional[Path] = None, tail_bytes: int = 256 * 1024) -> int:
+    if path is None:
+        diag_env = os.environ.get("NIGHTY_DIAG_DIR")
+        base = Path(diag_env) if diag_env else Path(__file__).resolve().parents[1] / "diagnostics"
+        path = base / "backend.log"
+    if not path.is_file():
+        print(f"[triage] no log to inspect at {path}")
+        return 0
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - tail_bytes))
+            text = fh.read().decode("utf-8", errors="replace")
+    except OSError as exc:
+        print(f"[triage] could not read {path}: {exc}", file=sys.stderr)
+        return 1
+    findings = scan_known_failures(text)
+    if not findings:
+        print(f"[triage] no known failure signature in the last {tail_bytes // 1024} KiB of {path.name}")
+        return 0
+    print(f"[triage] {len(findings)} known failure signature(s) in {path.name}:")
+    for item in findings:
+        print()
+        print(f"  [{item['id']}] matched: {redact_secrets(item['match'])}")
+        print(f"  {item['advice']}")
+    print()
+    return 0
 
 
 def pe_machine(path: Path) -> int:
@@ -428,7 +514,7 @@ def generate_report(diag_dir: Optional[Path] = None, outfile: Optional[Path] = N
         lines.append("  (No critical errors or tracebacks detected in recent log tails)")
     lines.append("")
     lines.append("=" * 80)
-    lines.append("END OF REPORT - Everything in this folder can be safely attached to support tickets.")
+    lines.append("END OF REPORT - This file is redacted and safe to attach. The raw logs beside it are NOT: check them for tokens first.")
     lines.append("=" * 80)
 
     report_content = "\n".join(lines) + "\n"
@@ -459,6 +545,8 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--diag-dir", type=Path, default=None, help="path to diagnostics directory")
     report.add_argument("--outfile", type=Path, default=None, help="path to output report file")
     report.add_argument("--quiet", action="store_true", help="do not print to stdout")
+    triage = sub.add_parser("triage", help="explain known backend failure signatures")
+    triage.add_argument("--log", type=Path, default=None, help="path to the log to inspect")
     return parser
 
 
@@ -471,11 +559,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.command == "wine":
         return check_wine(args.path)
     if args.command == "diag":
+<<<<<<< HEAD
         result = check_network(args.quiet)
         code = result[0] if isinstance(result, tuple) else result
         return code
+=======
+        return check_network(args.quiet)
+>>>>>>> upstream/main
     if args.command == "report":
         return generate_report(args.diag_dir, args.outfile, args.quiet)
+    if args.command == "triage":
+        return triage_log(args.log)
     return 2
 
 if __name__ == "__main__":

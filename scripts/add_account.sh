@@ -18,7 +18,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 
 # Host/port from the same .env the rest of the stack uses.
-if [ -f "$ROOT/.env" ]; then set -a; . "$ROOT/.env"; set +a; fi
+. "$ROOT/scripts/env_file.sh"
+nighty_load_env_file "$ROOT/.env"
 BRIDGE_PORT="${BRIDGE_PORT:-8088}"
 
 # Resolve Nighty's appdata via the shared helper (needs the wine prefix env,

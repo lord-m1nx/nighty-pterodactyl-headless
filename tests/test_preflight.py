@@ -99,6 +99,16 @@ class DiagnosticsReportTests(unittest.TestCase):
             self.assertIn("ValueError: test error", content)
 
 
+class DiagSubcommandTests(unittest.TestCase):
+    def test_diag_returns_the_network_exit_code(self) -> None:
+        with mock.patch.object(PREFLIGHT, "run_network_checks", return_value=(0, [])):
+            self.assertEqual(PREFLIGHT.main(["diag", "--quiet"]), 0)
+
+    def test_diag_propagates_a_network_failure(self) -> None:
+        with mock.patch.object(PREFLIGHT, "run_network_checks", return_value=(1, [])):
+            self.assertEqual(PREFLIGHT.main(["diag", "--quiet"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -14,6 +14,18 @@ import enforce_config  # noqa: E402
 
 
 class EnforceConfigTests(unittest.TestCase):
+    def test_migrates_active_account_without_overriding_new_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'nighty.config'
+            path.write_text(json.dumps({'web': True, 'logins': {'old': {'active': True}}}))
+            enforce_config.enforce_web(tmp)
+            data = json.loads(path.read_text())
+            self.assertEqual(data['active_account'], 'old')
+            data['active_account'] = 'new'
+            path.write_text(json.dumps(data))
+            enforce_config.enforce_web(tmp)
+            self.assertEqual(json.loads(path.read_text())['active_account'], 'new')
+
     def test_enforce_web_backup_and_recovery(self):
         with tempfile.TemporaryDirectory() as tmp:
             appdata = tmp
@@ -102,6 +114,32 @@ class EnforceConfigTests(unittest.TestCase):
             with open(big_log, "rb") as f:
                 header = f.read(50)
             self.assertIn(b"[truncated log rotation]", header)
+
+
+    def test_rotation_never_touches_the_backend_owned_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            appdata = os.path.join(tmp, "Nighty Selfbot")
+            os.makedirs(appdata, exist_ok=True)
+            os.environ["NIGHTY_HOME"] = tmp
+            os.environ["NIGHTY_DIAG_DIR"] = os.path.join(tmp, "diagnostics")
+
+            owned = os.path.join(appdata, "nighty.log")
+            with open(owned, "wb") as f:
+                f.write(b"L" * (12 * 1024 * 1024))
+
+            writer = open(owned, "r+b")
+            writer.seek(0, os.SEEK_END)
+
+            enforce_config.rotate_and_clean_logs(appdata)
+
+            writer.write(b"REAL LOG LINE\n")
+            writer.flush()
+            writer.close()
+
+            with open(owned, "rb") as f:
+                data = f.read()
+            self.assertNotIn(b"\x00\x00\x00\x00", data)
+            self.assertIn(b"REAL LOG LINE", data)
 
 
 if __name__ == "__main__":

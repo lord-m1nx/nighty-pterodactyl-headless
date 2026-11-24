@@ -31,7 +31,8 @@ warn() { printf '  %s!%s %s\n' "$Y" "$N" "$*"; }
 need() { command -v "$1" >/dev/null 2>&1; }
 
 # Learn the real runtime locations from .env (falling back to defaults).
-if [ -f "$HERE/.env" ]; then set -a; . "$HERE/.env"; set +a; fi
+. "$HERE/scripts/env_file.sh"
+nighty_load_env_file "$HERE/.env"
 : "${NIGHTY_HOME:=$HOME/.local/share/nighty}"
 : "${WINEPREFIX:=$NIGHTY_HOME/prefix}"
 : "${NIGHTY_STUB:=$HERE/Nighty_stub.exe}"
@@ -82,6 +83,24 @@ full_uninstall() {
     ok "service stopped, disabled and removed"
   fi
 
+  if [ -f /etc/init.d/nighty ]; then
+    info "Removing OpenRC service…"
+    need rc-service && $SUDO rc-service nighty stop >/dev/null 2>&1 || true
+    need rc-update && $SUDO rc-update del nighty default >/dev/null 2>&1 || true
+    $SUDO rm -f /etc/init.d/nighty
+    ok "OpenRC service stopped, disabled and removed"
+  fi
+
+  if [ -d /etc/sv/nighty ]; then
+    info "Removing runit service…"
+    need sv && $SUDO sv down nighty >/dev/null 2>&1 || true
+    for link_dir in /var/service /etc/service /etc/runit/runsvdir/default; do
+      [ -L "$link_dir/nighty" ] && $SUDO rm -f "$link_dir/nighty"
+    done
+    $SUDO rm -rf /etc/sv/nighty
+    ok "runit service stopped, unlinked and removed"
+  fi
+
   info "Stopping any running processes…"; stop_stack; sleep 2; ok "processes stopped"
 
   info "Deleting all data…"
@@ -97,8 +116,18 @@ full_uninstall() {
   # remove the RP-fetch blackhole install.sh added to /etc/hosts (handles the
   # older "lrclib blackhole" marker too, for installs made before it was renamed).
   if grep -qE "nighty-linux-headless: (lrclib|RP-fetch) blackhole" /etc/hosts 2>/dev/null; then
-    $SUDO sed -i '/nighty-linux-headless: \(lrclib\|RP-fetch\) blackhole/d;/^0\.0\.0\.0 lrclib\.net$/d;/^0\.0\.0\.0 api\.lrclib\.net$/d;/^0\.0\.0\.0 api\.spotify\.com$/d' /etc/hosts \
+    $SUDO sed -i -E '/nighty-linux-headless: (lrclib|RP-fetch) blackhole/d;/^[[:space:]]*(0\.0\.0\.0|127\.0\.0\.1|192\.0\.2\.1)[[:space:]]+(api\.)?lrclib\.net[[:space:]]*$/d;/^[[:space:]]*(0\.0\.0\.0|127\.0\.0\.1|192\.0\.2\.1)[[:space:]]+api\.spotify\.com[[:space:]]*$/d' /etc/hosts \
       && ok "removed RP-fetch blackhole from /etc/hosts"
+  fi
+  if [ -f /etc/systemd/system/nighty-rp-blackhole.service ]; then
+    $SUDO systemctl disable --now nighty-rp-blackhole.service >/dev/null 2>&1 || true
+    $SUDO rm -f /etc/systemd/system/nighty-rp-blackhole.service
+    $SUDO systemctl daemon-reload >/dev/null 2>&1 || true
+    ok "removed nighty-rp-blackhole.service"
+  fi
+  if command -v ip >/dev/null 2>&1 && ip route show 192.0.2.1 2>/dev/null | grep -q unreachable; then
+    $SUDO ip route del unreachable 192.0.2.1 >/dev/null 2>&1 \
+      && ok "removed the RP-fetch blackhole route"
   fi
 
   echo

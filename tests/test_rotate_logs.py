@@ -52,5 +52,33 @@ class RotateLogsTests(unittest.TestCase):
                 self.assertTrue((tmp_path / f"{name}.1").is_file())
 
 
+    def test_open_appending_writer_keeps_writing_to_the_live_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_file = Path(tmp) / "backend.log"
+            log_file.write_text("x" * 2000, encoding="utf-8")
+            with open(log_file, "a", encoding="utf-8") as writer:
+                rotated = rotate_logs.rotate_log_file(log_file, max_bytes=1000, max_backups=3)
+                self.assertTrue(rotated)
+                writer.write("LINE AFTER ROTATION\n")
+                writer.flush()
+            self.assertIn("LINE AFTER ROTATION", log_file.read_text(encoding="utf-8"))
+            backup1 = Path(tmp) / "backend.log.1"
+            self.assertNotIn("LINE AFTER ROTATION", backup1.read_text(encoding="utf-8"))
+
+    def test_backend_owned_logs_are_never_targeted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prefix = root / "prefix" / "drive_c" / "users" / "nighty" / "AppData" / "Roaming" / "Nighty Selfbot"
+            prefix.mkdir(parents=True)
+            (prefix / "nighty.log").write_text("owned by the backend\n", encoding="utf-8")
+            diag = root / "diagnostics"
+            diag.mkdir()
+            (diag / "nighty.log").write_text("mirror\n", encoding="utf-8")
+            targets = rotate_logs.wrapper_owned_logs(diag, root)
+            self.assertIn(diag / "nighty.log", targets)
+            for target in targets:
+                self.assertNotIn("drive_c", target.parts)
+
+
 if __name__ == "__main__":
     unittest.main()

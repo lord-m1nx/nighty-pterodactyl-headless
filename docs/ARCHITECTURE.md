@@ -40,7 +40,7 @@ graph LR
 
 ### 1. Headless GUI Stub (`scripts/repack.py`)
 
-PyInstaller stores Python modules in a `PYZ` archive inside the exe. `repack.py` parses the `CArchive`/`PYZ`, **replaces only the `webview` package** with a drop-in stub, copies everything else byte-for-byte, and rewrites the archive with the original bootloader.
+PyInstaller stores Python modules in a `PYZ` archive inside the exe. `repack.py` parses the `CArchive`/`PYZ`, replaces the `webview` package with a drop-in stub, wraps the Qt runtime hook for offscreen operation when present, and rewrites the archive with the original bootloader. All other archive entries are preserved.
 
 The stub:
 - Implements the `webview` API surface (`create_window`, `start`, `Window`, events) as no-ops, so the program's startup path completes instead of crashing on GUI init.
@@ -51,7 +51,9 @@ The stub:
 > This does **not** touch Nighty's licensing or its protected code — it only swaps the GUI layer. You still need a valid Nighty license and your own exe.
 
 > [!NOTE]
-> The repack must run under **Python 3.8**, because the embedded code objects are 3.8 bytecode and the `marshal` format is version-specific. `install.sh` fetches a 3.8 interpreter via `uv` for this one step.
+> The repack must use the executable's **embedded Python version** because `marshal` bytecode is version-specific. `install.sh` reads the PyInstaller cookie and obtains the matching interpreter via `uv` (3.8 for older builds, 3.14 for the current build).
+
+Current Nighty also initializes PyQt6 before its WebView. The repacker preserves the original Qt runtime hook and adds a headless adapter: Qt uses the offscreen platform and a real primary-screen fallback. Wine 11.5 supplies the ICU DLL required by the new Qt build. The static runtime uses WoW64 so both x86-64 and ARM64 hosts avoid 32-bit Linux dependencies.
 
 ### 2. Config Enforcement (`scripts/enforce_config.py`)
 
@@ -97,7 +99,7 @@ When running via Docker (the recommended deployment method), the architecture ad
 1. **Unprivileged Container:** The image builds and runs entirely under a non-root user (`nighty`, UID `1000`). It avoids running Wine or Xvfb as root.
 2. **Dynamic Permission Mapping:** If the host user runs Docker with a different UID, the `docker-start.sh` script actively reads your host's UID/GID and passes it to `docker-compose` as `USER_ID` and `GROUP_ID`. The `Dockerfile` modifies the internal `nighty` user on-the-fly to match your host, completely eliminating volume permission conflicts.
 3. **Secret Injection:** Web UI credentials (`.env`) are never baked into the image. They are stored on the host in `docker-secrets/` with strict `644` permissions inside a `700` directory, and mapped into the container as read-only volumes. The orchestrator inside the container reads these safely.
-4. **Log Rotation:** Docker handles log management natively. The `docker-compose.yml` configures the `json-file` driver to restrict `max-size` (default `10m`) and `max-file: 1`. When the backend outputs logs, Docker engine streams them to disk and truncates them the millisecond they hit the limit, preventing disk exhaustion without needing `logrotate`.
+4. **Log Rotation:** The `json-file` driver settings in `docker-compose.yml` (`max-size`, `max-file: 1`) cap the container's **stdout/stderr** stream only. They do not bound the stack's logs, because `run.sh` redirects every component to real files under the bind-mounted `diagnostics/` directory rather than to the container's stdout. Those files are rotated by `scripts/rotate_logs.py` at each backend launch and by the guard on a `ROTATE_INTERVAL` timer, which copy-truncates in place so the `O_APPEND` writers keep their inode. Nighty's own `nighty.log` lives inside the Wine prefix and is mirrored into `diagnostics/`, never rewritten — the backend holds it open, so truncating it would corrupt the running process's log.
 
 ---
 
@@ -141,7 +143,7 @@ Everything Nighty and this wrapper persist lives **outside the repository**, whi
 | `<repo>/Nighty.exe`, `Nighty_stub.exe` | your binary and the repacked stub (never committed) |
 | `/etc/systemd/system/nighty.service` | the autostart unit (if you enabled autostart) |
 
-**Generic tooling installed by `install.sh` if missing** — *not* Nighty-specific, so the uninstaller leaves it alone by default: `uv` (`~/.local/bin/uv`, with a Python 3.8 under `~/.local/share/uv` / `~/.cache/uv`), **Box64** (`/usr/bin/box64` + its apt repo files under `/etc/apt/`), and your distro's Wine packages.
+**Generic tooling installed by `install.sh` if missing** — *not* Nighty-specific, so the uninstaller leaves it alone by default: `uv` (`~/.local/bin/uv`, with the matching Python under `~/.local/share/uv` / `~/.cache/uv`), **Box64** (`/usr/bin/box64` + its apt repo files under `/etc/apt/`), and your distro's Wine packages.
 
 ---
 
