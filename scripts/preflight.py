@@ -559,11 +559,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.command == "wine":
         return check_wine(args.path)
     if args.command == "diag":
-<<<<<<< HEAD
+
         result = check_network(args.quiet)
         code = result[0] if isinstance(result, tuple) else result
         return code
-=======
+
         return check_network(args.quiet)
 >>>>>>> upstream/main
     if args.command == "report":
