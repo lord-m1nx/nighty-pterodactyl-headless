@@ -45,7 +45,7 @@ nighty_load_env_file "$HERE/.env"
 # Once the stub is alive, the native panel still has to authenticate, sync and
 # open WEBUI_PORT. A transient Discord/Cloudflare failure can otherwise leave the
 # loading screen alive forever even though the first-stage watchdog has exited.
-: "${WEBUI_BOOT_TIMEOUT:=180}"
+: "${WEBUI_BOOT_TIMEOUT:=3600}"
 : "${BACKEND_FAST_FAIL_SECONDS:=60}"
 : "${BACKEND_MAX_BACKOFF:=300}"
 : "${BACKEND_TRIAGE_AFTER:=3}"
@@ -69,7 +69,7 @@ export NIGHTY_STUB_LOG="${NIGHTY_STUB_LOG:-Z:$NIGHTY_DIAG_DIR/stub_webview.log}"
 # integration (winemenubuilder). Override via WINEDLLOVERRIDES in .env if needed.
 export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-mscoree=d;mshtml=d;winemenubuilder.exe=d}"
 # Force UTF-8 for the backend's console/log streams only. Nighty's logger prints
-# emoji (🔌 / ❌ / 🌐) in some connect/status messages; under Wine the default
+# emoji ( /  / ) in some connect/status messages; under Wine the default
 # stdout codec is cp1252, so those lines raise UnicodeEncodeError
 # ("--- Logging error ---"), are lost, and flood backend.log with tracebacks (I/O
 # that competes with the emulated bot). PYTHONIOENCODING changes ONLY the stdio
